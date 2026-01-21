@@ -1,15 +1,59 @@
-// Load saved token from localStorage
+// Load saved credentials from localStorage
 window.addEventListener('DOMContentLoaded', () => {
     const savedToken = localStorage.getItem('github_token');
     if (savedToken) {
         document.getElementById('token').value = savedToken;
     }
+    
+    const savedRailwayAccessKey = localStorage.getItem('railway_access_key');
+    if (savedRailwayAccessKey) {
+        document.getElementById('railwayAccessKey').value = savedRailwayAccessKey;
+    }
+    
+    const savedRailwaySecretKey = localStorage.getItem('railway_secret_key');
+    if (savedRailwaySecretKey) {
+        document.getElementById('railwaySecretKey').value = savedRailwaySecretKey;
+    }
+    
+    const savedRailwayEndpoint = localStorage.getItem('railway_endpoint');
+    if (savedRailwayEndpoint) {
+        document.getElementById('railwayEndpoint').value = savedRailwayEndpoint;
+    }
+    
+    const savedRailwayBucket = localStorage.getItem('railway_bucket');
+    if (savedRailwayBucket) {
+        document.getElementById('railwayBucket').value = savedRailwayBucket;
+    }
 });
 
-// Save token to localStorage when changed
+// Save credentials to localStorage when changed
 document.getElementById('token').addEventListener('change', (e) => {
     if (e.target.value) {
         localStorage.setItem('github_token', e.target.value);
+    }
+});
+
+document.getElementById('railwayAccessKey').addEventListener('change', (e) => {
+    if (e.target.value) {
+        localStorage.setItem('railway_access_key', e.target.value);
+    }
+});
+
+document.getElementById('railwaySecretKey').addEventListener('change', (e) => {
+    if (e.target.value) {
+        localStorage.setItem('railway_secret_key', e.target.value);
+    }
+});
+
+document.getElementById('railwayEndpoint').addEventListener('change', (e) => {
+    if (e.target.value) {
+        localStorage.setItem('railway_endpoint', e.target.value);
+    }
+});
+
+document.getElementById('railwayBucket').addEventListener('change', (e) => {
+    if (e.target.value) {
+        localStorage.setItem('railway_bucket', e.target.value);
     }
 });
 
@@ -43,19 +87,37 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
         return;
     }
     
-    // Save token
+    // Get Railway storage credentials
+    const railwayEndpoint = document.getElementById('railwayEndpoint').value.trim();
+    const railwayBucket = document.getElementById('railwayBucket').value.trim();
+    const railwayAccessKey = document.getElementById('railwayAccessKey').value.trim();
+    const railwaySecretKey = document.getElementById('railwaySecretKey').value.trim();
+    
+    // Save credentials
     localStorage.setItem('github_token', token);
+    if (railwayEndpoint) localStorage.setItem('railway_endpoint', railwayEndpoint);
+    if (railwayBucket) localStorage.setItem('railway_bucket', railwayBucket);
+    if (railwayAccessKey) localStorage.setItem('railway_access_key', railwayAccessKey);
+    if (railwaySecretKey) localStorage.setItem('railway_secret_key', railwaySecretKey);
     
     // Hide previous result
     document.getElementById('result').classList.add('hidden');
     
-            // Show uploading status
-            showStatus('Uploading PDF and creating redirect page...', 'info');
-            document.getElementById('uploadBtn').disabled = true;
+    // Show uploading status
+    const useRailway = railwayEndpoint && railwayBucket && railwayAccessKey && railwaySecretKey;
+    showStatus(useRailway ? 'Uploading PDF to Railway storage...' : 'Uploading PDF and creating redirect page...', 'info');
+    document.getElementById('uploadBtn').disabled = true;
     
     try {
-        const urls = await uploadPDF(owner, repo, branch, token, file);
-        showResult(urls);
+        let urls;
+        if (useRailway) {
+            // Upload to Railway storage
+            urls = await uploadToRailway(railwayEndpoint, railwayBucket, railwayAccessKey, railwaySecretKey, file);
+        } else {
+            // Upload to GitHub
+            urls = await uploadPDF(owner, repo, branch, token, file);
+        }
+        showResult(urls, useRailway);
         showStatus('Upload successful!', 'success');
     } catch (error) {
         showStatus(`Error: ${error.message}`, 'error');
@@ -174,6 +236,122 @@ async function uploadPDF(owner, repo, branch, token, file) {
     }
 }
 
+// Upload PDF to Railway Storage (S3-compatible)
+async function uploadToRailway(endpoint, bucket, accessKey, secretKey, file) {
+    // Generate unique filename
+    const uniquePath = generateUniquePath(file.name);
+    const key = `uploads/${uniquePath}`;
+    
+    // Read file as ArrayBuffer
+    const fileBuffer = await file.arrayBuffer();
+    
+    // Prepare S3 PUT request with Signature Version 4
+    // Railway S3-compatible: bucket-name.storage.railway.app or storage.railway.app/bucket-name
+    const endpointUrl = new URL(endpoint);
+    const hostname = `${bucket}.${endpointUrl.hostname}`;
+    const url = new URL(`https://${hostname}/${key}`);
+    
+    const region = 'auto';
+    const service = 's3';
+    const algorithm = 'AWS4-HMAC-SHA256';
+    const now = new Date();
+    const dateStamp = now.toISOString().slice(0, 10).replace(/-/g, '');
+    const amzDate = now.toISOString().slice(0, 19).replace(/[:-]|\.\d{3}/g, '') + 'Z';
+    
+    // Create canonical request
+    const canonicalUri = `/${key}`;
+    const canonicalQuerystring = '';
+    const canonicalHeaders = `host:${hostname}\ncontent-type:application/pdf\nx-amz-date:${amzDate}\n`;
+    const signedHeaders = 'host;content-type;x-amz-date';
+    const payloadHash = await sha256(Array.from(new Uint8Array(fileBuffer)));
+    
+    const canonicalRequest = `PUT\n${canonicalUri}\n${canonicalQuerystring}\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
+    
+    // Create string to sign
+    const credentialScope = `${dateStamp}/${region}/${service}/aws4_request`;
+    const canonicalRequestHash = await sha256(canonicalRequest);
+    const stringToSign = `${algorithm}\n${amzDate}\n${credentialScope}\n${canonicalRequestHash}`;
+    
+    // Calculate signature
+    const signature = await calculateSignature(secretKey, dateStamp, region, service, stringToSign);
+    
+    // Create authorization header
+    const authorization = `${algorithm} Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+    
+    // Make the PUT request
+    const response = await fetch(url.toString(), {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/pdf',
+            'x-amz-date': amzDate,
+            'Authorization': authorization
+        },
+        body: fileBuffer
+    });
+    
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Railway upload failed: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+    
+    // Construct public URL (Railway storage public URL format)
+    // Railway S3-compatible storage public URLs: https://bucket-name.storage.railway.app/key
+    // or https://storage.railway.app/bucket-name/key depending on configuration
+    const endpointUrl2 = new URL(endpoint);
+    const publicUrl = `https://${bucket}.${endpointUrl2.hostname}/${key}`;
+    
+    return {
+        htmlUrl: publicUrl,
+        pdfUrl: publicUrl
+    };
+}
+
+// SHA256 hash function
+async function sha256(message) {
+    if (typeof message === 'string') {
+        const msgBuffer = new TextEncoder().encode(message);
+        const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+        return Array.from(new Uint8Array(hashBuffer))
+            .map(b => b.toString(16).padStart(2, '0'))
+            .join('');
+    } else {
+        // Array of bytes
+        const hashBuffer = await crypto.subtle.digest('SHA-256', message);
+        return Array.from(new Uint8Array(hashBuffer))
+            .map(b => b.toString(16).padStart(2, '0'))
+            .join('');
+    }
+}
+
+// Calculate AWS Signature Version 4
+async function calculateSignature(secretKey, dateStamp, region, service, stringToSign) {
+    const kDate = await hmacSha256(secretKey, dateStamp);
+    const kRegion = await hmacSha256(kDate, region);
+    const kService = await hmacSha256(kRegion, service);
+    const kSigning = await hmacSha256(kService, 'aws4_request');
+    const signature = await hmacSha256(kSigning, stringToSign);
+    return Array.from(signature)
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+}
+
+// HMAC-SHA256 function - returns Uint8Array
+async function hmacSha256(key, message) {
+    const keyBuffer = typeof key === 'string' ? new TextEncoder().encode(key) : key;
+    const messageBuffer = typeof message === 'string' ? new TextEncoder().encode(message) : message;
+    
+    const cryptoKey = await crypto.subtle.importKey(
+        'raw',
+        keyBuffer,
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign']
+    );
+    
+    const signature = await crypto.subtle.sign('HMAC', cryptoKey, messageBuffer);
+    return new Uint8Array(signature);
+}
+
 // Generate unique file path: uploads/YYYY/MM/timestamp-random-sanitizedName.pdf
 function generateUniquePath(originalName) {
     const now = new Date();
@@ -223,25 +401,31 @@ function showStatus(message, type) {
 }
 
 // Show result with URL
-function showResult(urls) {
+function showResult(urls, isRailway = false) {
     const resultEl = document.getElementById('result');
     const htmlUrl = urls.htmlUrl || urls;
     const pdfUrl = urls.pdfUrl || urls;
     
     // Update the result HTML to show both URLs
+    const noteText = isRailway 
+        ? 'File uploaded to Railway storage. Make sure your bucket has public read access configured.'
+        : 'Note: If you just enabled GitHub Pages, the first deploy may take ~1–2 minutes.';
+    
     resultEl.innerHTML = `
         <h2>Upload Successful!</h2>
-        <p class="result-label">Public URL (for email providers):</p>
+        <p class="result-label">Public URL${isRailway ? '' : ' (for email providers)'}:</p>
         <div class="url-container">
             <a id="resultUrl" href="${htmlUrl}" target="_blank" class="url-link">${htmlUrl}</a>
             <button id="copyBtn" class="btn-copy">Copy URL</button>
         </div>
+        ${!isRailway ? `
         <p class="result-label" style="margin-top: 15px;">Direct PDF URL:</p>
         <div class="url-container">
             <a id="pdfUrl" href="${pdfUrl}" target="_blank" class="url-link" style="font-size: 12px;">${pdfUrl}</a>
             <button id="copyPdfBtn" class="btn-copy">Copy PDF URL</button>
         </div>
-        <p class="note">Note: If you just enabled GitHub Pages, the first deploy may take ~1–2 minutes.</p>
+        ` : ''}
+        <p class="note">${noteText}</p>
     `;
     
     // Re-attach copy button event listeners
@@ -250,10 +434,13 @@ function showResult(urls) {
         await copyToClipboard(url, 'copyBtn');
     });
     
-    document.getElementById('copyPdfBtn').addEventListener('click', async () => {
-        const url = document.getElementById('pdfUrl').href;
-        await copyToClipboard(url, 'copyPdfBtn');
-    });
+    const copyPdfBtn = document.getElementById('copyPdfBtn');
+    if (copyPdfBtn) {
+        copyPdfBtn.addEventListener('click', async () => {
+            const url = document.getElementById('pdfUrl').href;
+            await copyToClipboard(url, 'copyPdfBtn');
+        });
+    }
     
     resultEl.classList.remove('hidden');
 }
