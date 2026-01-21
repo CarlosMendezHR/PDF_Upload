@@ -49,13 +49,13 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
     // Hide previous result
     document.getElementById('result').classList.add('hidden');
     
-    // Show uploading status
-    showStatus('Uploading PDF...', 'info');
-    document.getElementById('uploadBtn').disabled = true;
+            // Show uploading status
+            showStatus('Uploading PDF and creating redirect page...', 'info');
+            document.getElementById('uploadBtn').disabled = true;
     
     try {
-        const publicUrl = await uploadPDF(owner, repo, branch, token, file);
-        showResult(publicUrl);
+        const urls = await uploadPDF(owner, repo, branch, token, file);
+        showResult(urls);
         showStatus('Upload successful!', 'success');
     } catch (error) {
         showStatus(`Error: ${error.message}`, 'error');
@@ -100,9 +100,57 @@ async function uploadPDF(owner, repo, branch, token, file) {
             const data = await response.json();
             
             if (response.status === 201 || response.status === 200) {
-                // Success - construct public URL
-                const publicUrl = `https://${owner}.github.io/${repo}/${path}`;
-                return publicUrl;
+                // Success - construct public URLs
+                const pdfUrl = `https://${owner}.github.io/${repo}/${path}`;
+                
+                // Create HTML redirect page for email providers
+                const htmlPath = path.replace('.pdf', '.html');
+                const fileName = path.split('/').pop();
+                const htmlContent = `<!DOCTYPE html>
+<html>
+<head>
+    <meta http-equiv="refresh" content="0; url=${fileName}">
+    <meta name="robots" content="noindex">
+    <title>PDF Document</title>
+</head>
+<body>
+    <p>Loading PDF... <a href="${fileName}">Click here if not redirected</a></p>
+    <script>window.location.href = "${fileName}";</script>
+</body>
+</html>`;
+                
+                // Upload HTML redirect file
+                const htmlBase64 = btoa(unescape(encodeURIComponent(htmlContent)));
+                const htmlApiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${htmlPath}`;
+                
+                try {
+                    const htmlResponse = await fetch(htmlApiUrl, {
+                        method: 'PUT',
+                        headers: {
+                            'Authorization': `token ${token}`,
+                            'Accept': 'application/vnd.github.v3+json',
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            message: `Add redirect page for ${file.name}`,
+                            content: htmlBase64,
+                            branch: branch
+                        })
+                    });
+                    
+                    if (htmlResponse.status === 201 || htmlResponse.status === 200) {
+                        const htmlUrl = `https://${owner}.github.io/${repo}/${htmlPath}`;
+                        return { htmlUrl, pdfUrl };
+                    } else {
+                        // If HTML upload fails, still return PDF URL
+                        console.warn('HTML redirect page creation failed, using PDF URL only');
+                        return { htmlUrl: pdfUrl, pdfUrl };
+                    }
+                } catch (htmlError) {
+                    // If HTML upload fails, still return PDF URL
+                    console.warn('Failed to create HTML redirect:', htmlError);
+                    return { htmlUrl: pdfUrl, pdfUrl };
+                }
             } else if (response.status === 409) {
                 // File exists, retry with new filename
                 attempt++;
@@ -175,23 +223,46 @@ function showStatus(message, type) {
 }
 
 // Show result with URL
-function showResult(url) {
+function showResult(urls) {
     const resultEl = document.getElementById('result');
-    const urlEl = document.getElementById('resultUrl');
+    const htmlUrl = urls.htmlUrl || urls;
+    const pdfUrl = urls.pdfUrl || urls;
     
-    urlEl.href = url;
-    urlEl.textContent = url;
+    // Update the result HTML to show both URLs
+    resultEl.innerHTML = `
+        <h2>Upload Successful!</h2>
+        <p class="result-label">Public URL (for email providers):</p>
+        <div class="url-container">
+            <a id="resultUrl" href="${htmlUrl}" target="_blank" class="url-link">${htmlUrl}</a>
+            <button id="copyBtn" class="btn-copy">Copy URL</button>
+        </div>
+        <p class="result-label" style="margin-top: 15px;">Direct PDF URL:</p>
+        <div class="url-container">
+            <a id="pdfUrl" href="${pdfUrl}" target="_blank" class="url-link" style="font-size: 12px;">${pdfUrl}</a>
+            <button id="copyPdfBtn" class="btn-copy">Copy PDF URL</button>
+        </div>
+        <p class="note">Note: If you just enabled GitHub Pages, the first deploy may take ~1–2 minutes.</p>
+    `;
+    
+    // Re-attach copy button event listeners
+    document.getElementById('copyBtn').addEventListener('click', async () => {
+        const url = document.getElementById('resultUrl').href;
+        await copyToClipboard(url, 'copyBtn');
+    });
+    
+    document.getElementById('copyPdfBtn').addEventListener('click', async () => {
+        const url = document.getElementById('pdfUrl').href;
+        await copyToClipboard(url, 'copyPdfBtn');
+    });
     
     resultEl.classList.remove('hidden');
 }
 
-// Copy to clipboard
-document.getElementById('copyBtn').addEventListener('click', async () => {
-    const url = document.getElementById('resultUrl').href;
-    
+// Copy to clipboard helper function
+async function copyToClipboard(text, buttonId) {
     try {
-        await navigator.clipboard.writeText(url);
-        const copyBtn = document.getElementById('copyBtn');
+        await navigator.clipboard.writeText(text);
+        const copyBtn = document.getElementById(buttonId);
         const originalText = copyBtn.textContent;
         copyBtn.textContent = 'Copied!';
         setTimeout(() => {
@@ -200,14 +271,14 @@ document.getElementById('copyBtn').addEventListener('click', async () => {
     } catch (error) {
         // Fallback for older browsers
         const textArea = document.createElement('textarea');
-        textArea.value = url;
+        textArea.value = text;
         textArea.style.position = 'fixed';
         textArea.style.opacity = '0';
         document.body.appendChild(textArea);
         textArea.select();
         try {
             document.execCommand('copy');
-            const copyBtn = document.getElementById('copyBtn');
+            const copyBtn = document.getElementById(buttonId);
             const originalText = copyBtn.textContent;
             copyBtn.textContent = 'Copied!';
             setTimeout(() => {
@@ -218,4 +289,6 @@ document.getElementById('copyBtn').addEventListener('click', async () => {
         }
         document.body.removeChild(textArea);
     }
-});
+}
+
+// Copy to clipboard event listeners are now attached dynamically in showResult()
