@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub PDF Uploader</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>GitHub PDF Uploader</h1>
+        <p class="subtitle">Upload PDFs directly to GitHub and get public GitHub Pages URLs</p>
+        
+        <form id="uploadForm">
+            <div class="form-group">
+                <label for="owner">GitHub Owner (username/org) *</label>
+                <input type="text" id="owner" required placeholder="username or organization">
+            </div>
+            
+            <div class="form-group">
+                <label for="repo">Repository Name *</label>
+                <input type="text" id="repo" required placeholder="my-repo">
+            </div>
+            
+            <div class="form-group">
+                <label for="branch">Branch *</label>
+                <input type="text" id="branch" value="main" required placeholder="main">
+            </div>
+            
+            <div class="form-group">
+                <label for="token">GitHub Personal Access Token (PAT) *</label>
+                <input type="password" id="token" required placeholder="ghp_...">
+                <small>Stored in localStorage. Classic PAT with repo scope required.</small>
+            </div>
+            
+            <div class="form-group">
+                <label for="pdfFile">PDF File *</label>
+                <input type="file" id="pdfFile" accept="application/pdf" required>
+                <small>Max 25MB. PDF files only.</small>
+            </div>
+            
+            <button type="submit" id="uploadBtn" class="btn-primary">Upload PDF</button>
+        </form>
+        
+        <div id="status" class="status hidden"></div>
+        
+        <div id="result" class="result hidden">
+            <h2>Upload Successful!</h2>
+            <p class="result-label">Public URL:</p>
+            <div class="url-container">
+                <a id="resultUrl" href="#" target="_blank" class="url-link"></a>
+                <button id="copyBtn" class="btn-copy">Copy URL</button>
+            </div>
+            <p class="note">Note: If you just enabled GitHub Pages, the first deploy may take ~1–2 minutes.</p>
+        </div>
+    </div>
+    
+    <script src="app.js"></script>
+</body>
+</html>
